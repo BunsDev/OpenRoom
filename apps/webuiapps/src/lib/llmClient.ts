@@ -65,6 +65,9 @@ interface LLMResponse {
   toolCalls: ToolCall[];
 }
 
+import { logger } from './logger';
+import { loadPersistedConfig, savePersistedConfig } from './configPersistence';
+
 const CONFIG_KEY = 'webuiapps-llm-config';
 
 const DEFAULT_CONFIGS: Record<LLMProvider, Omit<LLMConfig, 'apiKey'>> = {
@@ -86,7 +89,24 @@ export function getDefaultConfig(provider: LLMProvider): Omit<LLMConfig, 'apiKey
   return DEFAULT_CONFIGS[provider];
 }
 
-export function loadConfig(): LLMConfig | null {
+/**
+ * Load config — priority: local file (~/.openroom/config.json) > localStorage.
+ * Falls back gracefully if the dev server API is unavailable (e.g. production build).
+ * Handles both legacy flat format and new { llm, imageGen? } format.
+ */
+export async function loadConfig(): Promise<LLMConfig | null> {
+  // 1. Try local file via dev-server API (handles legacy + new format)
+  try {
+    const persisted = await loadPersistedConfig();
+    if (persisted?.llm) {
+      localStorage.setItem(CONFIG_KEY, JSON.stringify(persisted.llm));
+      return persisted.llm;
+    }
+  } catch {
+    // API not available (production / network error) — fall through
+  }
+
+  // 2. Fall back to localStorage
   try {
     const raw = localStorage.getItem(CONFIG_KEY);
     return raw ? JSON.parse(raw) : null;
@@ -95,8 +115,35 @@ export function loadConfig(): LLMConfig | null {
   }
 }
 
-export function saveConfig(config: LLMConfig): void {
+/**
+ * Save config — writes to both localStorage and local file (~/.openroom/config.json).
+ * Optionally accepts imageGenConfig to persist both atomically.
+ */
+export async function saveConfig(
+  config: LLMConfig,
+  imageGenConfig?: import('./imageGenClient').ImageGenConfig | null,
+): Promise<void> {
+  // Always write localStorage (sync, instant)
   localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
+
+  // Build persisted config — include imageGen if provided
+  const persisted: import('./configPersistence').PersistedConfig = { llm: config };
+  if (imageGenConfig) {
+    persisted.imageGen = imageGenConfig;
+  }
+
+  // Best-effort write to local file
+  await savePersistedConfig(persisted);
+}
+
+/** Synchronous read from localStorage cache (use after loadConfig() has been awaited once). */
+export function loadConfigSync(): LLMConfig | null {
+  try {
+    const raw = localStorage.getItem(CONFIG_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -107,8 +154,9 @@ export async function chat(
   tools: ToolDef[],
   config: LLMConfig,
 ): Promise<LLMResponse> {
-  console.info(
-    '[LLM] chat() called, provider:',
+  logger.info(
+    'LLM',
+    'chat() called, provider:',
     config.provider,
     'model:',
     config.model,
@@ -138,8 +186,8 @@ async function chatOpenAI(
   const toolNames = Array.isArray(tools)
     ? tools.map((t: { function?: { name?: string } }) => t.function?.name).filter(Boolean)
     : [];
-  console.info('[ToolLog] LLM Request: toolCount=', tools.length, 'toolNames=', toolNames);
-  console.info('[LLM] Request:', {
+  logger.info('ToolLog', 'LLM Request: toolCount=', tools.length, 'toolNames=', toolNames);
+  logger.info('LLM', 'Request:', {
     targetUrl,
     model: config.model,
     messageCount: messages.length,
@@ -156,9 +204,9 @@ async function chatOpenAI(
     body: JSON.stringify(body),
   });
 
-  console.info('[LLM] Response status:', res.status);
+  logger.info('LLM', 'Response status:', res.status);
   const text = await res.text();
-  console.info('[LLM] Response body:', text.slice(0, 500));
+  logger.info('LLM', 'Response body:', text.slice(0, 500));
 
   if (!res.ok) {
     throw new Error(`LLM API error ${res.status}: ${text}`);
@@ -170,8 +218,9 @@ async function chatOpenAI(
   const calledNames = toolCalls
     .map((tc: { function?: { name?: string } }) => tc.function?.name)
     .filter(Boolean);
-  console.info(
-    '[ToolLog] LLM Response: toolCalls count=',
+  logger.info(
+    'ToolLog',
+    'LLM Response: toolCalls count=',
     toolCalls.length,
     'calledNames=',
     calledNames,
@@ -238,14 +287,15 @@ async function chatAnthropic(
   if (anthropicTools.length > 0) body.tools = anthropicTools;
 
   const anthropicToolNames = anthropicTools.map((t: { name?: string }) => t.name).filter(Boolean);
-  console.info(
-    '[ToolLog] Anthropic Request: toolCount=',
+  logger.info(
+    'ToolLog',
+    'Anthropic Request: toolCount=',
     anthropicTools.length,
     'toolNames=',
     anthropicToolNames,
   );
   const targetUrl = `${config.baseUrl}/v1/messages`;
-  console.info('[LLM] Anthropic Request:', {
+  logger.info('LLM', 'Anthropic Request:', {
     targetUrl,
     model: config.model,
     messageCount: anthropicMessages.length,
@@ -263,15 +313,15 @@ async function chatAnthropic(
     body: JSON.stringify(body),
   });
 
-  console.info('[LLM] Anthropic Response status:', res.status);
+  logger.info('LLM', 'Anthropic Response status:', res.status);
   if (!res.ok) {
     const text = await res.text();
-    console.error('[LLM] Anthropic Error body:', text.slice(0, 500));
+    logger.error('LLM', 'Anthropic Error body:', text.slice(0, 500));
     throw new Error(`Anthropic API error ${res.status}: ${text}`);
   }
 
   const data = await res.json();
-  console.info('[LLM] Anthropic Response data:', JSON.stringify(data).slice(0, 500));
+  logger.info('LLM', 'Anthropic Response data:', JSON.stringify(data).slice(0, 500));
   let content = '';
   const toolCalls: ToolCall[] = [];
 
@@ -291,8 +341,9 @@ async function chatAnthropic(
   }
 
   const calledNames = toolCalls.map((tc) => tc.function.name).filter(Boolean);
-  console.info(
-    '[ToolLog] Anthropic Response: toolCalls count=',
+  logger.info(
+    'ToolLog',
+    'Anthropic Response: toolCalls count=',
     toolCalls.length,
     'calledNames=',
     calledNames,
