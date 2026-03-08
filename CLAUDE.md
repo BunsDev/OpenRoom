@@ -146,3 +146,25 @@ pnpm test:e2e:ui       # interactive UI mode
 - The web server (`pnpm dev`) is auto-launched on port 3000 and reused if already running.
 - Only Chromium is configured by default; add projects in `playwright.config.ts` for Firefox/WebKit.
 - After completing code changes that affect UI or routing, run `pnpm test:e2e` and report pass/fail.
+
+## Task completion quality bar (mandatory)
+
+Before declaring a task complete, agents must satisfy all of the following:
+
+1. **Unit tests must pass** for the affected package(s).
+   - For `apps/webuiapps`, run the relevant Vitest command(s), for example:
+     ```bash
+     cd apps/webuiapps && pnpm test
+     cd apps/webuiapps && pnpm test:coverage
+     ```
+2. **Code coverage must be > 90%** for the code touched by the task.
+   - If current config thresholds are lower, do not treat that as sufficient.
+   - Add or improve tests until the changed area exceeds 90% coverage, or explicitly report why that is not yet achievable.
+3. **E2E coverage must be complete for impacted user flows.**
+   - Do not stop at smoke tests if the change affects real behavior.
+   - Cover the primary user path, key state transitions, and at least one meaningful assertion of successful behavior.
+   - If UI behavior changes, prefer stable selectors (`data-testid`) over fragile class-name/text-only selectors.
+4. **Report exact validation commands and results** in the final handoff.
+   - Include what passed, what failed, and any known gaps.
+
+Minimum expectation: no task is "done" if unit tests are red, coverage on changed code is below 90%, or impacted E2E coverage is missing/incomplete.
