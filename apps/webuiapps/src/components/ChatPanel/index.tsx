@@ -425,7 +425,10 @@ const ChatPanel: React.FC<{ onClose: () => void; visible?: boolean }> = ({
     loadMemories(sessionPath).then(setMemories);
   }, [sessionPath, modCollection, seedPrologue]);
 
-  // Load configs from file (async override)
+  // Load configs from file (async override).
+  // Empty deps [] is intentional: configs (character collection, mod collection,
+  // chat config, image-gen config) are loaded inside the effect and written to
+  // state — they are not external dependencies that should trigger re-runs.
   useEffect(() => {
     loadConfig().then((fileConfig) => {
       if (fileConfig) setConfig(fileConfig);

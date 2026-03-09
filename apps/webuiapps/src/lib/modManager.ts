@@ -440,7 +440,10 @@ export class ModManager {
 
     for (const id of targetIds) {
       if (validTargets.includes(id) && !this.state.completed_targets.includes(id)) {
-        this.state.completed_targets.push(id);
+        this.state = {
+          ...this.state,
+          completed_targets: [...this.state.completed_targets, id],
+        };
         newlyCompleted.push(id);
       }
     }
@@ -460,10 +463,13 @@ export class ModManager {
 
     // Stage complete — advance
     const completedStage = { index: stage.stage_index, name: stage.stage_name };
-    this.state.current_stage_index++;
+    this.state = {
+      ...this.state,
+      current_stage_index: this.state.current_stage_index + 1,
+    };
 
     if (this.state.current_stage_index >= this.config.stage_count) {
-      this.state.is_finished = true;
+      this.state = { ...this.state, is_finished: true };
       return {
         message: `Stage "${stage.stage_name}" completed! All stages finished!`,
         stageCompleted: true,

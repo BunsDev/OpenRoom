@@ -187,8 +187,8 @@ function migrateOldFormat(): CharacterCollection | null {
         return collection;
       }
     }
-  } catch {
-    // ignore
+  } catch (e) {
+    console.warn('[CharacterManager] migrateOldFormat failed:', e);
   }
   return null;
 }
@@ -203,8 +203,8 @@ export async function loadCharacterCollection(): Promise<CharacterCollection | n
         return data as CharacterCollection;
       }
     }
-  } catch {
-    // API not available
+  } catch (e) {
+    console.warn('[CharacterManager] loadCharacterCollection API not available:', e);
   }
   return null;
 }
@@ -216,8 +216,8 @@ export function loadCharacterCollectionSync(): CharacterCollection | null {
       const parsed = JSON.parse(raw);
       if (parsed.activeId && parsed.items) return parsed as CharacterCollection;
     }
-  } catch {
-    // ignore
+  } catch (e) {
+    console.warn('[CharacterManager] loadCharacterCollectionSync failed:', e);
   }
   return migrateOldFormat();
 }
@@ -230,8 +230,8 @@ export async function saveCharacterCollection(collection: CharacterCollection): 
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(collection),
     });
-  } catch {
-    // Silently ignore
+  } catch (e) {
+    console.warn('[CharacterManager] saveCharacterCollection failed:', e);
   }
 }
 
@@ -365,11 +365,6 @@ export function clearEmotionVideoCache(characterId?: string): void {
   } else {
     _emotionVideoCache.clear();
   }
-}
-
-/** @deprecated Use resolveEmotionMedia instead */
-export function resolveEmotionImage(config: CharacterConfig, emotion?: string): string | undefined {
-  return resolveEmotionMedia(config, emotion)?.url;
 }
 
 export function getCharacterPromptContext(config: CharacterConfig): string {

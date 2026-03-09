@@ -42,7 +42,8 @@ export async function listFiles(dirPath: string): Promise<{
       return await res.json();
     }
     return { files: [], not_exists: true };
-  } catch {
+  } catch (e) {
+    console.warn('[diskStorage] listFiles failed:', e);
     return { files: [], not_exists: true };
   }
 }
@@ -60,7 +61,8 @@ export async function getFile(filePath: string): Promise<unknown> {
     } catch {
       return text;
     }
-  } catch {
+  } catch (e) {
+    console.warn('[diskStorage] getFile failed:', e);
     return null;
   }
 }
@@ -81,8 +83,8 @@ export async function putTextFilesByJSON(data: {
         headers: { 'Content-Type': 'text/plain' },
         body: file.content || '',
       });
-    } catch {
-      // silently ignore
+    } catch (e) {
+      console.warn('[diskStorage] putTextFilesByJSON write failed:', e);
     }
   });
   await Promise.all(promises);
@@ -140,7 +142,8 @@ export async function searchFiles(data: { query: string }): Promise<unknown[]> {
         parentId: null,
         metadata: { size: f.size || 0 },
       }));
-  } catch {
+  } catch (e) {
+    console.warn('[diskStorage] searchFiles failed:', e);
     return [];
   }
 }
