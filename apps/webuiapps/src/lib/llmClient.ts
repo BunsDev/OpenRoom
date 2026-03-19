@@ -3,32 +3,55 @@
  * Supports OpenAI / DeepSeek / Anthropic formats
  */
 
-export type LLMProvider = 'openai' | 'anthropic' | 'deepseek' | 'minimax';
+import type { LLMConfig } from './llmModels';
 
-export interface LLMConfig {
-  provider: LLMProvider;
-  apiKey: string;
-  baseUrl: string;
-  model: string;
-  /** Custom headers, format "Key: Value", one per line */
-  customHeaders?: string;
+import { logger } from './logger';
+import { loadPersistedConfig, savePersistedConfig } from './configPersistence';
+
+const CONFIG_KEY = 'webuiapps-llm-config';
+
+export async function loadConfig(): Promise<LLMConfig | null> {
+  try {
+    const persisted = await loadPersistedConfig();
+    if (persisted?.llm) {
+      localStorage.setItem(CONFIG_KEY, JSON.stringify(persisted.llm));
+      return persisted.llm;
+    }
+  } catch {
+    // API not available (production / network error)
+  }
+
+  try {
+    const raw = localStorage.getItem(CONFIG_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
 }
 
-/** Parse custom headers string into Record, adding x-custom- prefix for proxy forwarding */
-function parseCustomHeaders(raw?: string): Record<string, string> {
-  if (!raw) return {};
-  const headers: Record<string, string> = {};
-  for (const line of raw.split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    const idx = trimmed.indexOf(':');
-    if (idx > 0) {
-      const key = trimmed.slice(0, idx).trim().toLowerCase();
-      const val = trimmed.slice(idx + 1).trim();
-      headers[`x-custom-${key}`] = val;
-    }
+export async function saveConfig(
+  config: LLMConfig,
+  imageGenConfig?: import('./imageGenClient').ImageGenConfig | null,
+): Promise<void> {
+  localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
+
+  const persisted: import('./configPersistence').PersistedConfig = {
+    llm: config,
+  };
+  if (imageGenConfig) {
+    persisted.imageGen = imageGenConfig;
   }
-  return headers;
+
+  await savePersistedConfig(persisted);
+}
+
+export function loadConfigSync(): LLMConfig | null {
+  try {
+    const raw = localStorage.getItem(CONFIG_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
 }
 
 export interface ChatMessage {
@@ -65,90 +88,38 @@ interface LLMResponse {
   toolCalls: ToolCall[];
 }
 
-import { logger } from './logger';
-import { loadPersistedConfig, savePersistedConfig } from './configPersistence';
-
-const CONFIG_KEY = 'webuiapps-llm-config';
-
-const DEFAULT_CONFIGS: Record<LLMProvider, Omit<LLMConfig, 'apiKey'>> = {
-  openai: { provider: 'openai', baseUrl: 'https://api.openai.com', model: 'gpt-5.3-chat-latest' },
-  deepseek: { provider: 'deepseek', baseUrl: 'https://api.deepseek.com', model: 'deepseek-chat' },
-  anthropic: {
-    provider: 'anthropic',
-    baseUrl: 'https://api.anthropic.com',
-    model: 'claude-opus-4-6',
-  },
-  minimax: {
-    provider: 'minimax',
-    baseUrl: 'https://api.minimax.io/anthropic',
-    model: 'MiniMax-M2.5',
-  },
-};
-
-export function getDefaultConfig(provider: LLMProvider): Omit<LLMConfig, 'apiKey'> {
-  return DEFAULT_CONFIGS[provider];
+function hasVersionSuffix(url: string): boolean {
+  return /\/v\d+\/?$/.test(url);
 }
 
-/**
- * Load config — priority: local file (~/.openroom/config.json) > localStorage.
- * Falls back gracefully if the dev server API is unavailable (e.g. production build).
- * Handles both legacy flat format and new { llm, imageGen? } format.
- */
-export async function loadConfig(): Promise<LLMConfig | null> {
-  // 1. Try local file via dev-server API (handles legacy + new format)
-  try {
-    const persisted = await loadPersistedConfig();
-    if (persisted?.llm) {
-      localStorage.setItem(CONFIG_KEY, JSON.stringify(persisted.llm));
-      return persisted.llm;
+function joinUrl(baseUrl: string, path: string): string {
+  return `${baseUrl.replace(/\/+$/, '')}/${path.replace(/^\/+/, '')}`;
+}
+
+function getOpenAICompletionsPath(baseUrl: string): string {
+  return hasVersionSuffix(baseUrl) ? 'chat/completions' : 'v1/chat/completions';
+}
+
+function getAnthropicMessagesPath(baseUrl: string): string {
+  return hasVersionSuffix(baseUrl) ? 'messages' : 'v1/messages';
+}
+
+function parseCustomHeaders(raw?: string): Record<string, string> {
+  if (!raw) return {};
+  const headers: Record<string, string> = {};
+  for (const line of raw.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const idx = trimmed.indexOf(':');
+    if (idx > 0) {
+      const key = trimmed.slice(0, idx).trim().toLowerCase();
+      const val = trimmed.slice(idx + 1).trim();
+      headers[`x-custom-${key}`] = val;
     }
-  } catch {
-    // API not available (production / network error) — fall through
   }
-
-  // 2. Fall back to localStorage
-  try {
-    const raw = localStorage.getItem(CONFIG_KEY);
-    return raw ? JSON.parse(raw) : null;
-  } catch {
-    return null;
-  }
+  return headers;
 }
 
-/**
- * Save config — writes to both localStorage and local file (~/.openroom/config.json).
- * Optionally accepts imageGenConfig to persist both atomically.
- */
-export async function saveConfig(
-  config: LLMConfig,
-  imageGenConfig?: import('./imageGenClient').ImageGenConfig | null,
-): Promise<void> {
-  // Always write localStorage (sync, instant)
-  localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
-
-  // Build persisted config — include imageGen if provided
-  const persisted: import('./configPersistence').PersistedConfig = { llm: config };
-  if (imageGenConfig) {
-    persisted.imageGen = imageGenConfig;
-  }
-
-  // Best-effort write to local file
-  await savePersistedConfig(persisted);
-}
-
-/** Synchronous read from localStorage cache (use after loadConfig() has been awaited once). */
-export function loadConfigSync(): LLMConfig | null {
-  try {
-    const raw = localStorage.getItem(CONFIG_KEY);
-    return raw ? JSON.parse(raw) : null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Call LLM API (non-streaming, simple version)
- */
 export async function chat(
   messages: ChatMessage[],
   tools: ToolDef[],
@@ -182,10 +153,8 @@ async function chatOpenAI(
     body.tools = tools;
   }
 
-  const targetUrl = `${config.baseUrl}/v1/chat/completions`;
-  const toolNames = Array.isArray(tools)
-    ? tools.map((t: { function?: { name?: string } }) => t.function?.name).filter(Boolean)
-    : [];
+  const targetUrl = joinUrl(config.baseUrl, getOpenAICompletionsPath(config.baseUrl));
+  const toolNames = Array.isArray(tools) ? tools.map((t) => t.function?.name).filter(Boolean) : [];
   logger.info('ToolLog', 'LLM Request: toolCount=', tools.length, 'toolNames=', toolNames);
   logger.info('LLM', 'Request:', {
     targetUrl,
@@ -236,11 +205,9 @@ async function chatAnthropic(
   tools: ToolDef[],
   config: LLMConfig,
 ): Promise<LLMResponse> {
-  // Extract system message
   const systemMsg = messages.find((m) => m.role === 'system')?.content || '';
   const nonSystemMessages = messages.filter((m) => m.role !== 'system');
 
-  // Convert message format
   const anthropicMessages = nonSystemMessages.map((m) => {
     if (m.role === 'tool') {
       return {
@@ -271,7 +238,6 @@ async function chatAnthropic(
     return { role: m.role as 'user' | 'assistant', content: m.content };
   });
 
-  // Convert tools
   const anthropicTools = tools.map((t) => ({
     name: t.function.name,
     description: t.function.description,
@@ -286,7 +252,7 @@ async function chatAnthropic(
   if (systemMsg) body.system = systemMsg;
   if (anthropicTools.length > 0) body.tools = anthropicTools;
 
-  const anthropicToolNames = anthropicTools.map((t: { name?: string }) => t.name).filter(Boolean);
+  const anthropicToolNames = anthropicTools.map((t) => t.name).filter(Boolean);
   logger.info(
     'ToolLog',
     'Anthropic Request: toolCount=',
@@ -294,7 +260,7 @@ async function chatAnthropic(
     'toolNames=',
     anthropicToolNames,
   );
-  const targetUrl = `${config.baseUrl}/v1/messages`;
+  const targetUrl = joinUrl(config.baseUrl, getAnthropicMessagesPath(config.baseUrl));
   logger.info('LLM', 'Anthropic Request:', {
     targetUrl,
     model: config.model,

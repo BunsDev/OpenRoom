@@ -7,17 +7,16 @@ import {
   Maximize2,
   ChevronDown,
   ChevronRight,
+  Pencil,
+  List,
 } from 'lucide-react';
+import { chat, loadConfig, loadConfigSync, saveConfig, type ChatMessage } from '@/lib/llmClient';
 import {
-  chat,
-  loadConfig,
-  loadConfigSync,
-  saveConfig,
-  getDefaultConfig,
+  PROVIDER_MODELS,
+  getDefaultProviderConfig,
   type LLMConfig,
   type LLMProvider,
-  type ChatMessage,
-} from '@/lib/llmClient';
+} from '@/lib/llmModels';
 import {
   loadImageGenConfig,
   loadImageGenConfigSync,
@@ -1008,6 +1007,7 @@ const ChatPanel: React.FC<{ onClose: () => void; visible?: boolean }> = ({
             {messages.map((msg) => (
               <React.Fragment key={msg.id}>
                 <div
+                  data-testid="chat-message"
                   className={`${styles.message} ${
                     msg.role === 'user'
                       ? styles.user
@@ -1121,9 +1121,15 @@ const SettingsModal: React.FC<{
   // LLM settings
   const [provider, setProvider] = useState<LLMProvider>(config?.provider || 'minimax');
   const [apiKey, setApiKey] = useState(config?.apiKey || '');
-  const [baseUrl, setBaseUrl] = useState(config?.baseUrl || getDefaultConfig('minimax').baseUrl);
-  const [model, setModel] = useState(config?.model || getDefaultConfig('minimax').model);
+  const [baseUrl, setBaseUrl] = useState(
+    config?.baseUrl || getDefaultProviderConfig('minimax').baseUrl,
+  );
+  const [model, setModel] = useState(config?.model || getDefaultProviderConfig('minimax').model);
   const [customHeaders, setCustomHeaders] = useState(config?.customHeaders || '');
+  const [manualModelMode, setManualModelMode] = useState(false);
+
+  const isPresetModel = PROVIDER_MODELS[provider]?.includes(model) ?? false;
+  const showDropdown = !manualModelMode && isPresetModel;
 
   // Image gen settings
   const [igProvider, setIgProvider] = useState<ImageGenProvider>(
@@ -1140,9 +1146,15 @@ const SettingsModal: React.FC<{
 
   const handleProviderChange = (p: LLMProvider) => {
     setProvider(p);
-    const defaults = getDefaultConfig(p);
+    const defaults = getDefaultProviderConfig(p);
     setBaseUrl(defaults.baseUrl);
     setModel(defaults.model);
+    setManualModelMode(false);
+  };
+
+  const handleModelChange = (newModel: string) => {
+    setModel(newModel);
+    setManualModelMode(false);
   };
 
   const handleIgProviderChange = (p: ImageGenProvider) => {
@@ -1168,6 +1180,8 @@ const SettingsModal: React.FC<{
             <option value="anthropic">Anthropic</option>
             <option value="deepseek">DeepSeek</option>
             <option value="minimax">MiniMax</option>
+            <option value="z.ai">Z.ai</option>
+            <option value="kimi">Kimi</option>
           </select>
         </div>
 
@@ -1193,11 +1207,50 @@ const SettingsModal: React.FC<{
 
         <div className={styles.field}>
           <label className={styles.label}>Model</label>
-          <input
-            className={styles.fieldInput}
-            value={model}
-            onChange={(e) => setModel(e.target.value)}
-          />
+          <div className={styles.modelSelectorWrapper}>
+            {showDropdown ? (
+              <>
+                <select
+                  className={styles.select}
+                  value={model}
+                  onChange={(e) => handleModelChange(e.target.value)}
+                >
+                  {PROVIDER_MODELS[provider]?.map((m) => (
+                    <option key={m} value={m}>
+                      {m}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  onClick={() => setManualModelMode(true)}
+                  className={styles.manualToggleBtn}
+                  title="Enter custom model name"
+                >
+                  <Pencil size={14} />
+                </button>
+              </>
+            ) : (
+              <>
+                <input
+                  className={styles.fieldInput}
+                  value={model}
+                  onChange={(e) => setModel(e.target.value)}
+                  placeholder="e.g. gpt-4-turbo"
+                />
+                {isPresetModel && (
+                  <button
+                    type="button"
+                    onClick={() => setManualModelMode(false)}
+                    className={styles.manualToggleBtn}
+                    title="Back to model list"
+                  >
+                    <List size={14} />
+                  </button>
+                )}
+              </>
+            )}
+          </div>
         </div>
 
         <div className={styles.field}>
