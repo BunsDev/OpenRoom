@@ -71,6 +71,29 @@ export function onOSEvent(callback: OSEventCallback): () => void {
 
 import { openWindow, closeWindow, getWindows as getWins } from './windowManager';
 
+// ============ Listener-Ready Notification ============
+// Tracks callback count at the moment each window was opened so we can detect
+// whether the App's listener has registered since then (event-driven, no fixed delay).
+
+interface WindowOpenSnapshot {
+  callbackCount: number;
+}
+const windowOpenSnapshots = new Map<number, WindowOpenSnapshot>();
+
+type ReadyResolver = () => void;
+const listenerReadyResolvers: ReadyResolver[] = [];
+
+function notifyListenerAdded() {
+  const resolvers = listenerReadyResolvers.splice(0);
+  resolvers.forEach((r) => r());
+}
+
+function hasNewListenerSince(appId: number): boolean {
+  const snap = windowOpenSnapshots.get(appId);
+  if (!snap) return true;
+  return agentMessageCallbacks.size > snap.callbackCount;
+}
+
 // ============ Action Parameter Translation ============
 // The LLM sends user-friendly params (e.g. content, title), but the App expects filePath pointing to written files.
 // This layer translates LLM params to the format the App expects before dispatching the Action.
@@ -112,11 +135,13 @@ export async function dispatchAgentAction(action: {
     if (action.action_type === 'OPEN_APP') {
       const targetAppId = Number(action.params?.app_id);
       openWindow(targetAppId);
+      windowOpenSnapshots.set(targetAppId, { callbackCount: agentMessageCallbacks.size });
       return 'success';
     }
     if (action.action_type === 'CLOSE_APP') {
       const targetAppId = Number(action.params?.app_id);
       closeWindow(targetAppId);
+      windowOpenSnapshots.delete(targetAppId);
       return 'success';
     }
     if (action.action_type === 'SET_WALLPAPER') {
@@ -145,7 +170,10 @@ export async function dispatchAgentAction(action: {
   const isOpen = wins2.some((w) => w.appId === action.app_id);
   if (!isOpen) {
     openWindow(action.app_id);
+    windowOpenSnapshots.set(action.app_id, { callbackCount: agentMessageCallbacks.size });
   }
+
+  const needsListenerWait = !hasNewListenerSince(action.app_id);
 
   // Collect extra info generated during translation (e.g. newly created IDs) to append to the App's return result
   const extraInfo: Record<string, string> = {};
@@ -165,17 +193,16 @@ export async function dispatchAgentAction(action: {
       trigger_by: 2, // Agent
     };
 
-    // If the window was just opened, wait for the component to mount before dispatching
-    const delay = isOpen ? 0 : 1500;
-
-    // Temporarily listen for the sendAgentMessage callback result
     let resolved = false;
-    const timeout = setTimeout(() => {
-      if (!resolved) {
-        resolved = true;
-        resolve('timeout: no response from app');
-      }
-    }, 10000 + delay);
+    const timeout = setTimeout(
+      () => {
+        if (!resolved) {
+          resolved = true;
+          resolve('timeout: no response from app');
+        }
+      },
+      needsListenerWait ? 20000 : 10000,
+    );
 
     const originalSend = mockManager.sendAgentMessage;
     mockManager.sendAgentMessage = (event: unknown) => {
@@ -184,7 +211,6 @@ export async function dispatchAgentAction(action: {
         if (!resolved) {
           resolved = true;
           clearTimeout(timeout);
-          // Append extra info from the translation phase (e.g. generated IDs)
           let result = evt.action_result || 'done';
           if (Object.keys(extraInfo).length > 0) {
             result += ' ' + JSON.stringify(extraInfo);
@@ -197,15 +223,24 @@ export async function dispatchAgentAction(action: {
       originalSend(event);
     };
 
-    // Trigger all onAgentMessage callbacks (delayed to wait for window mount)
     const dispatch = () => {
+      if (resolved) return;
       const payload = { content: JSON.stringify(fullAction) };
       agentMessageCallbacks.forEach((cb) => cb(payload));
     };
-    if (delay > 0) {
-      setTimeout(dispatch, delay);
+
+    // Always dispatch immediately (optimistic — succeeds if listener is already registered).
+    dispatch();
+
+    // If the App's listener might not be ready yet, also subscribe to the
+    // listener-registration notification and re-dispatch when a new listener appears.
+    if (needsListenerWait) {
+      listenerReadyResolvers.push(() => {
+        windowOpenSnapshots.delete(action.app_id);
+        setTimeout(dispatch, 0);
+      });
     } else {
-      dispatch();
+      windowOpenSnapshots.delete(action.app_id);
     }
   });
 }
@@ -297,6 +332,7 @@ const mockManager = {
 
   onAgentMessage: (callback: AgentMessageCallback): (() => void) => {
     agentMessageCallbacks.add(callback);
+    notifyListenerAdded();
     return () => agentMessageCallbacks.delete(callback);
   },
 

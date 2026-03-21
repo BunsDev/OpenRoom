@@ -20,8 +20,17 @@ type Listener = () => void;
 const listeners = new Set<Listener>();
 
 let windows: WindowState[] = [];
-let nextZ = 10;
+let nextZ = 100;
 let offsetCounter = 0;
+
+/**
+ * Claim the next z-index value from the shared counter.
+ * Used by both AppWindow (via focusWindow) and ChatPanel to participate
+ * in the same stacking order — click either to bring it to front.
+ */
+export function claimZIndex(): number {
+  return ++nextZ;
+}
 
 function notify() {
   listeners.forEach((fn) => fn());

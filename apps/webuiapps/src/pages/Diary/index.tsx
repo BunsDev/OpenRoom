@@ -1,6 +1,9 @@
 import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { motion, AnimatePresence } from 'framer-motion';
+import ReactMarkdown, { type Components } from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import rehypeRaw from 'rehype-raw';
 import { initVibeApp, AppLifecycle } from '@gui/vibe-container';
 import {
   useFileSystem,
@@ -224,40 +227,43 @@ const HandDrawnScribble = ({ color = '#1f2937' }: { color?: string }) => (
   </svg>
 );
 
-// ============ Special Marker Content Rendering ============
-const renderDiaryContent = (content: string) => {
-  const parts = content.split(
-    /(\{\{(?:strike|scribble|messy)\}\}.*?\{\{\/(?:strike|scribble|messy)\}\})/s,
-  );
-  return parts.map((part, index) => {
-    if (part.startsWith('{{strike}}')) {
-      const text = part.replace(/\{\{\/?strike\}\}/g, '');
+// ============ Content Rendering (Markdown + Custom Markup) ============
+
+/**
+ * Pre-process custom diary markup into HTML spans that rehype-raw can pass through.
+ * {{strike}}text{{/strike}}   → <span data-effect="strike">text</span>
+ * {{scribble}}text{{/scribble}} → <span data-effect="scribble">text</span>
+ * {{messy}}text{{/messy}}     → <span data-effect="messy">text</span>
+ */
+const preprocessCustomMarkup = (content: string): string =>
+  content
+    .replace(/\{\{strike\}\}(.*?)\{\{\/strike\}\}/gs, '<span data-effect="strike">$1</span>')
+    .replace(/\{\{scribble\}\}(.*?)\{\{\/scribble\}\}/gs, '<span data-effect="scribble">$1</span>')
+    .replace(/\{\{messy\}\}(.*?)\{\{\/messy\}\}/gs, '<span data-effect="messy">$1</span>');
+
+const markdownComponents: Components = {
+  span: ({ children, node: _node, ...props }) => {
+    const effect = (props as Record<string, unknown>)['data-effect'] as string | undefined;
+    if (effect === 'strike') {
       return (
-        <span
-          key={index}
-          style={{ position: 'relative', display: 'inline-block', margin: '0 2px' }}
-        >
-          {text}
+        <span style={{ position: 'relative', display: 'inline-block', margin: '0 2px' }}>
+          {children}
           <HandDrawnStrike color="#ef4444" />
         </span>
       );
-    } else if (part.startsWith('{{scribble}}')) {
-      const text = part.replace(/\{\{\/?scribble\}\}/g, '');
+    }
+    if (effect === 'scribble') {
       return (
-        <span
-          key={index}
-          style={{ position: 'relative', display: 'inline-block', margin: '0 2px' }}
-        >
-          {text}
+        <span style={{ position: 'relative', display: 'inline-block', margin: '0 2px' }}>
+          {children}
           <HandDrawnStrike color="#1f2937" />
           <HandDrawnStrike color="#1f2937" />
         </span>
       );
-    } else if (part.startsWith('{{messy}}')) {
-      const text = part.replace(/\{\{\/?messy\}\}/g, '');
+    }
+    if (effect === 'messy') {
       return (
         <span
-          key={index}
           style={{
             position: 'relative',
             display: 'inline-block',
@@ -265,26 +271,50 @@ const renderDiaryContent = (content: string) => {
             color: 'transparent',
           }}
         >
-          {text}
+          {children}
           <HandDrawnScribble />
           <span style={{ position: 'absolute', left: 0, top: 0, color: '#374151', opacity: 0.1 }}>
-            {text}
+            {children}
           </span>
         </span>
       );
     }
-    // Plain text: preserve line breaks
-    return (
-      <span key={index}>
-        {part.split('\n').map((line, i, arr) => (
-          <React.Fragment key={i}>
-            {line}
-            {i < arr.length - 1 && <br />}
-          </React.Fragment>
-        ))}
-      </span>
-    );
-  });
+    return <span {...props}>{children}</span>;
+  },
+};
+
+/** Strip all markdown / custom markup to produce a plain-text snippet for list previews. */
+const stripMarkdown = (text: string): string =>
+  text
+    .replace(/\{\{\/?\w+\}\}/g, '') // custom markup tags
+    .replace(/^#{1,6}\s+/gm, '') // headings
+    .replace(/\*\*(.+?)\*\*/g, '$1') // bold
+    .replace(/__(.+?)__/g, '$1') // bold alt
+    .replace(/\*(.+?)\*/g, '$1') // italic
+    .replace(/_(.+?)_/g, '$1') // italic alt
+    .replace(/~~(.+?)~~/g, '$1') // strikethrough
+    .replace(/`{1,3}[^`]*`{1,3}/g, '') // inline/block code
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1') // links & images
+    .replace(/^\s*[-*+]\s+/gm, '') // unordered list markers
+    .replace(/^\s*\d+\.\s+/gm, '') // ordered list markers
+    .replace(/^\s*>\s?/gm, '') // blockquotes
+    .replace(/\|/g, ' ') // table pipes
+    .replace(/^[\s\-:]+$/gm, '') // table separator rows
+    .replace(/\n+/g, ' ') // collapse newlines
+    .replace(/\s{2,}/g, ' ') // collapse spaces
+    .trim();
+
+const renderDiaryContent = (content: string) => {
+  const processed = preprocessCustomMarkup(content);
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      rehypePlugins={[rehypeRaw]}
+      components={markdownComponents}
+    >
+      {processed}
+    </ReactMarkdown>
+  );
 };
 
 // ============ Mood/Weather Configuration ============
@@ -1199,7 +1229,7 @@ const Diary: React.FC = () => {
                 <div className={styles.diaryListItemTitle}>{entry.title || t('untitled')}</div>
                 {entry.content && (
                   <div className={styles.diaryListItemPreview}>
-                    {entry.content.replace(/\{\{\/?\w+\}\}/g, '').slice(0, 40)}
+                    {stripMarkdown(entry.content).slice(0, 60)}
                   </div>
                 )}
               </div>

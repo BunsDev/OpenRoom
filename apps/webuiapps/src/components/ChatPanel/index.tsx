@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback, memo } from 'react';
 import {
   Settings,
   Trash2,
@@ -195,7 +195,9 @@ Rules:
 - Data mutations MUST go through file_write/file_delete. app_action only notifies the app to reload, it cannot write data.
 - After file_write, ALWAYS call app_action with the corresponding REFRESH action.
 - Do NOT skip step 5. If the user asked to save/create/add something, you must file_write the data. file_list alone does not save anything.
-- NAS paths in guide.md like "/articles/xxx.json" map to "apps/{appName}/data/articles/xxx.json".
+- Do NOT skip steps 2-3. You MUST read guide.md before ANY file_write. The guide defines the ONLY valid directory structure and file schemas. Writing to paths not defined in guide.md will cause data loss — the app will not see the files.
+- NEVER invent or guess file paths. ALL file_write paths MUST exactly follow the directory structure in guide.md. For example, if guide.md defines entries under "/entries/{id}.json", you MUST write to "apps/{appName}/data/entries/{id}.json" — NOT to "apps/{appName}/data/{id}.json" or any other path.
+- NAS paths in guide.md like "/articles/xxx.json" map to "apps/{appName}/data/articles/xxx.json". This prefix rule applies to ALL paths — always preserve the full subdirectory structure from guide.md.
 
 When you receive "[User performed action in ... (appName: xxx)]", the appName is already provided. Read its meta.yaml to understand available actions, then respond accordingly. For games, respond with your own move — think strategically.
 
@@ -285,13 +287,104 @@ const ActionsTaken: React.FC<{ calls: string[] }> = ({ calls }) => {
 };
 
 // ---------------------------------------------------------------------------
+// CharacterAvatar – crossfade between emotion media without flashing
+// ---------------------------------------------------------------------------
+
+interface AvatarLayer {
+  url: string;
+  type: 'video' | 'image';
+  active: boolean;
+}
+
+const CharacterAvatar: React.FC<{
+  character: CharacterConfig;
+  emotion?: string;
+  onEmotionEnd: () => void;
+}> = memo(({ character, emotion, onEmotionEnd }) => {
+  const isIdle = !emotion;
+  const media = resolveEmotionMedia(character, emotion || 'default');
+
+  const [layers, setLayers] = useState<AvatarLayer[]>(() =>
+    media ? [{ url: media.url, type: media.type, active: true }] : [],
+  );
+  const activeUrl = layers.find((l) => l.active)?.url;
+
+  useEffect(() => {
+    if (!media) {
+      setLayers([]);
+      return;
+    }
+    if (media.url === activeUrl) return;
+    setLayers((prev) => {
+      if (prev.some((l) => l.url === media.url)) return prev;
+      return [...prev, { url: media.url, type: media.type, active: false }];
+    });
+  }, [media?.url, activeUrl]);
+
+  const handleMediaReady = useCallback((readyUrl: string) => {
+    setLayers((prev) => {
+      const staleUrls = prev.filter((l) => l.url !== readyUrl).map((l) => l.url);
+      setTimeout(() => {
+        setLayers((curr) => curr.filter((l) => !staleUrls.includes(l.url)));
+      }, 300);
+      return prev.map((l) => ({ ...l, active: l.url === readyUrl }));
+    });
+  }, []);
+
+  if (layers.length === 0) {
+    return <div className={styles.avatarPlaceholder}>{character.character_name.charAt(0)}</div>;
+  }
+
+  return (
+    <>
+      {layers.map((layer) => {
+        const layerStyle: React.CSSProperties = {
+          position: 'absolute',
+          inset: 0,
+          opacity: layer.active ? 1 : 0,
+          transition: 'opacity 0.25s ease-out',
+        };
+        if (layer.type === 'video') {
+          return (
+            <video
+              key={layer.url}
+              className={styles.avatarImage}
+              style={layerStyle}
+              src={layer.url}
+              autoPlay
+              loop={layer.active ? isIdle : false}
+              muted
+              playsInline
+              onCanPlay={!layer.active ? () => handleMediaReady(layer.url) : undefined}
+              onEnded={layer.active && !isIdle ? onEmotionEnd : undefined}
+            />
+          );
+        }
+        return (
+          <img
+            key={layer.url}
+            className={styles.avatarImage}
+            style={layerStyle}
+            src={layer.url}
+            alt={character.character_name}
+            onLoad={!layer.active ? () => handleMediaReady(layer.url) : undefined}
+          />
+        );
+      })}
+    </>
+  );
+});
+
+// ---------------------------------------------------------------------------
 // ChatPanel
 // ---------------------------------------------------------------------------
 
-const ChatPanel: React.FC<{ onClose: () => void; visible?: boolean }> = ({
-  onClose,
-  visible = true,
-}) => {
+const ChatPanel: React.FC<{
+  onClose: () => void;
+  visible?: boolean;
+  zIndex?: number;
+  onFocus?: () => void;
+}> = ({ onClose, visible = true, zIndex, onFocus }) => {
   // Character + Mod state (collection-based)
   const [charCollection, setCharCollection] = useState<CharacterCollection>(
     () => loadCharacterCollectionSync() ?? DEFAULT_CHAR_COLLECTION,
@@ -915,37 +1008,19 @@ const ChatPanel: React.FC<{ onClose: () => void; visible?: boolean }> = ({
 
   return (
     <>
-      <div className={styles.panel} data-testid="chat-panel">
+      <div
+        className={styles.panel}
+        data-testid="chat-panel"
+        style={zIndex !== null && zIndex !== undefined ? { zIndex } : undefined}
+        onMouseDown={onFocus}
+      >
         {/* Left: Character Avatar */}
         <div className={styles.avatarSide}>
-          {(() => {
-            // Resolve media for the active emotion, or fall back to "peaceful" as idle
-            const idleEmotion = 'default';
-            const activeEmotion = currentEmotion || idleEmotion;
-            const isIdle = !currentEmotion;
-            const media = resolveEmotionMedia(character, activeEmotion);
-
-            if (!media) {
-              return (
-                <div className={styles.avatarPlaceholder}>{character.character_name.charAt(0)}</div>
-              );
-            }
-
-            return media.type === 'video' ? (
-              <video
-                key={media.url}
-                className={styles.avatarImage}
-                src={media.url}
-                autoPlay
-                loop={isIdle}
-                muted
-                playsInline
-                onEnded={isIdle ? undefined : () => setCurrentEmotion(undefined)}
-              />
-            ) : (
-              <img className={styles.avatarImage} src={media.url} alt={character.character_name} />
-            );
-          })()}
+          <CharacterAvatar
+            character={character}
+            emotion={currentEmotion}
+            onEmotionEnd={() => setCurrentEmotion(undefined)}
+          />
         </div>
 
         {/* Right: Chat */}

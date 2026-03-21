@@ -19,7 +19,7 @@ import {
 } from 'lucide-react';
 import ChatPanel from '../ChatPanel';
 import AppWindow from '../AppWindow';
-import { getWindows, subscribe, openWindow } from '@/lib/windowManager';
+import { getWindows, subscribe, openWindow, claimZIndex } from '@/lib/windowManager';
 import { getDesktopApps } from '@/lib/appRegistry';
 import { reportUserOsAction, onOSEvent } from '@/lib/vibeContainerMock';
 import { setReportUserActions } from '@/lib';
@@ -74,6 +74,7 @@ const Shell: React.FC = () => {
   const [liveWallpaper, setLiveWallpaper] = useState(false);
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [wallpaper, setWallpaper] = useState(VIDEO_WALLPAPER);
+  const [chatZIndex, setChatZIndex] = useState(() => claimZIndex());
   const [pipPos, setPipPos] = useState<{ x: number; y: number } | null>(null);
   const dragRef = useRef<{ startX: number; startY: number; origX: number; origY: number } | null>(
     null,
@@ -209,7 +210,12 @@ const Shell: React.FC = () => {
       ))}
 
       {/* Chat Panel — always mounted to preserve chat history */}
-      <ChatPanel onClose={() => setChatOpen(false)} visible={chatOpen} />
+      <ChatPanel
+        onClose={() => setChatOpen(false)}
+        visible={chatOpen}
+        zIndex={chatZIndex}
+        onFocus={() => setChatZIndex(claimZIndex())}
+      />
 
       <div ref={barRef} className={`${styles.bottomBar} ${chatOpen ? styles.chatOpen : ''}`}>
         <button
