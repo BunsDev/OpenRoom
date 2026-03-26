@@ -1,6 +1,6 @@
 /**
  * Minimal LLM API Client
- * Supports OpenAI / DeepSeek / Anthropic formats
+ * Supports OpenAI-compatible / Anthropic-compatible formats
  */
 
 import type { LLMConfig } from './llmModels';
@@ -88,6 +88,13 @@ interface LLMResponse {
   toolCalls: ToolCall[];
 }
 
+function stripThinkTags(content: string): string {
+  const withoutBlocks = content
+    .replace(/<think\b[^>]*>[\s\S]*?<\/think>/gi, '')
+    .replace(/<\/?think\b[^>]*>/gi, '');
+  return withoutBlocks === content ? content : withoutBlocks.trim();
+}
+
 function hasVersionSuffix(url: string): boolean {
   return /\/v\d+\/?$/.test(url);
 }
@@ -162,14 +169,17 @@ async function chatOpenAI(
     messageCount: messages.length,
     toolCount: tools.length,
   });
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'X-LLM-Target-URL': targetUrl,
+    ...parseCustomHeaders(config.customHeaders),
+  };
+  if (config.apiKey.trim()) {
+    headers.Authorization = `Bearer ${config.apiKey}`;
+  }
   const res = await fetch('/api/llm-proxy', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${config.apiKey}`,
-      'X-LLM-Target-URL': targetUrl,
-      ...parseCustomHeaders(config.customHeaders),
-    },
+    headers,
     body: JSON.stringify(body),
   });
 
@@ -195,7 +205,7 @@ async function chatOpenAI(
     calledNames,
   );
   return {
-    content: choice?.content || '',
+    content: stripThinkTags(choice?.content || ''),
     toolCalls,
   };
 }
@@ -267,15 +277,18 @@ async function chatAnthropic(
     messageCount: anthropicMessages.length,
     toolCount: anthropicTools.length,
   });
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'anthropic-version': '2023-06-01',
+    'X-LLM-Target-URL': targetUrl,
+    ...parseCustomHeaders(config.customHeaders),
+  };
+  if (config.apiKey.trim()) {
+    headers['x-api-key'] = config.apiKey;
+  }
   const res = await fetch('/api/llm-proxy', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': config.apiKey,
-      'anthropic-version': '2023-06-01',
-      'X-LLM-Target-URL': targetUrl,
-      ...parseCustomHeaders(config.customHeaders),
-    },
+    headers,
     body: JSON.stringify(body),
   });
 
@@ -314,5 +327,5 @@ async function chatAnthropic(
     'calledNames=',
     calledNames,
   );
-  return { content, toolCalls };
+  return { content: stripThinkTags(content), toolCalls };
 }
