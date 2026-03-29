@@ -1,6 +1,6 @@
 /**
  * Minimal LLM API Client
- * Supports OpenAI / DeepSeek / Anthropic formats
+ * Supports OpenAI-compatible / Anthropic-compatible formats
  */
 
 import type { LLMConfig } from './llmModels';
@@ -88,6 +88,73 @@ interface LLMResponse {
   toolCalls: ToolCall[];
 }
 
+interface InlineToolParseResult {
+  content: string;
+  toolCalls: ToolCall[];
+}
+
+function stripThinkTags(content: string): string {
+  const withoutBlocks = content
+    .replace(/<think\b[^>]*>[\s\S]*?<\/think>/gi, '')
+    .replace(/<\/?think\b[^>]*>/gi, '');
+  return withoutBlocks === content ? content : withoutBlocks.trim();
+}
+
+function parseInlineArgValue(rawValue: string): unknown {
+  const trimmed = rawValue.trim();
+  if (!trimmed) return '';
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return trimmed;
+  }
+}
+
+function extractInlineToolCalls(rawContent: string): InlineToolParseResult {
+  const content = stripThinkTags(rawContent);
+  if (!content.includes('<arg_key>') || !content.includes('<arg_value>')) {
+    return { content, toolCalls: [] };
+  }
+
+  const blockRegex = /(?:<tool_call>\s*|\()([a-zA-Z0-9_.-]+)\s*([\s\S]*?)<\/tool_call>/g;
+  const toolCalls: ToolCall[] = [];
+  let cleanedContent = content;
+  let matchIndex = 0;
+
+  for (const match of content.matchAll(blockRegex)) {
+    const toolName = match[1]?.trim();
+    const body = match[2] ?? '';
+    if (!toolName) continue;
+
+    const args: Record<string, unknown> = {};
+    const pairRegex =
+      /<arg_key>\s*([\s\S]*?)\s*<\/arg_key>\s*<arg_value>\s*([\s\S]*?)\s*<\/arg_value>/g;
+
+    for (const pair of body.matchAll(pairRegex)) {
+      const key = pair[1]?.trim();
+      if (!key) continue;
+      args[key] = parseInlineArgValue(pair[2] ?? '');
+    }
+
+    if (Object.keys(args).length === 0) continue;
+
+    toolCalls.push({
+      id: `inline_tool_${matchIndex++}`,
+      type: 'function',
+      function: {
+        name: toolName,
+        arguments: JSON.stringify(args),
+      },
+    });
+    cleanedContent = cleanedContent.replace(match[0], '');
+  }
+
+  return {
+    content: cleanedContent.trim(),
+    toolCalls,
+  };
+}
+
 function hasVersionSuffix(url: string): boolean {
   return /\/v\d+\/?$/.test(url);
 }
@@ -162,14 +229,17 @@ async function chatOpenAI(
     messageCount: messages.length,
     toolCount: tools.length,
   });
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'X-LLM-Target-URL': targetUrl,
+    ...parseCustomHeaders(config.customHeaders),
+  };
+  if (config.apiKey.trim()) {
+    headers.Authorization = `Bearer ${config.apiKey}`;
+  }
   const res = await fetch('/api/llm-proxy', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${config.apiKey}`,
-      'X-LLM-Target-URL': targetUrl,
-      ...parseCustomHeaders(config.customHeaders),
-    },
+    headers,
     body: JSON.stringify(body),
   });
 
@@ -183,7 +253,8 @@ async function chatOpenAI(
 
   const data = JSON.parse(text);
   const choice = data.choices?.[0]?.message;
-  const toolCalls = choice?.tool_calls || [];
+  const parsedInline = extractInlineToolCalls(choice?.content || '');
+  const toolCalls = choice?.tool_calls?.length ? choice.tool_calls : parsedInline.toolCalls;
   const calledNames = toolCalls
     .map((tc: { function?: { name?: string } }) => tc.function?.name)
     .filter(Boolean);
@@ -195,7 +266,9 @@ async function chatOpenAI(
     calledNames,
   );
   return {
-    content: choice?.content || '',
+    content: choice?.tool_calls?.length
+      ? stripThinkTags(choice?.content || '')
+      : parsedInline.content,
     toolCalls,
   };
 }
@@ -267,15 +340,18 @@ async function chatAnthropic(
     messageCount: anthropicMessages.length,
     toolCount: anthropicTools.length,
   });
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'anthropic-version': '2023-06-01',
+    'X-LLM-Target-URL': targetUrl,
+    ...parseCustomHeaders(config.customHeaders),
+  };
+  if (config.apiKey.trim()) {
+    headers['x-api-key'] = config.apiKey;
+  }
   const res = await fetch('/api/llm-proxy', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': config.apiKey,
-      'anthropic-version': '2023-06-01',
-      'X-LLM-Target-URL': targetUrl,
-      ...parseCustomHeaders(config.customHeaders),
-    },
+    headers,
     body: JSON.stringify(body),
   });
 
@@ -314,5 +390,5 @@ async function chatAnthropic(
     'calledNames=',
     calledNames,
   );
-  return { content, toolCalls };
+  return { content: stripThinkTags(content), toolCalls };
 }
